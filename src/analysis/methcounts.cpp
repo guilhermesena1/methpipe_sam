@@ -148,7 +148,6 @@ get_methylation_context_tag_from_genome(const string &s, const size_t pos) {
   return "N";
 }
 
-
 template <class count_type>
 static void
 count_states_pos(const MappedRead &r,
@@ -312,6 +311,9 @@ process_reads(const bool VERBOSE, igzfstream &in, T &out,
         cerr << "PROCESSING:\t" << chrom_order[j] << endl;
     }
 
+    // apply cigar to mr sequence before
+    mr.apply_cigar();
+
     // do the work for this mapped read, depending on strand
     if (mr.r.pos_strand())
       count_states_pos(mr, counts);
@@ -443,3 +445,4 @@ main(int argc, const char **argv) {
   }
   return EXIT_SUCCESS;
 }
+
