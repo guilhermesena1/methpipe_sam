@@ -56,7 +56,7 @@ using std::runtime_error;
    plants. */
 bool
 is_chh(const std::string &s, size_t i) {
-  return (i < (s.length() - 2)) &&
+  return
     is_cytosine(s[i]) &&
     !is_guanine(s[i + 1]) &&
     !is_guanine(s[i + 2]);
@@ -65,7 +65,7 @@ is_chh(const std::string &s, size_t i) {
 
 bool
 is_ddg(const std::string &s, size_t i) {
-  return (i < (s.length() - 2)) &&
+  return
     !is_cytosine(s[i]) &&
     !is_cytosine(s[i + 1]) &&
     is_guanine(s[i + 2]);
@@ -74,7 +74,7 @@ is_ddg(const std::string &s, size_t i) {
 
 bool
 is_c_at_g(const std::string &s, size_t i) {
-  return (i < (s.length() - 2)) &&
+  return
     is_cytosine(s[i]) &&
     !is_cytosine(s[i + 1]) &&
     !is_guanine(s[i + 1]) &&
@@ -135,15 +135,21 @@ string
 get_methylation_context_tag_from_genome(const string &s, const size_t pos) {
   if (is_cytosine(s[pos])) {
     if (is_cpg(s, pos)) return "CpG";
-    else if (is_chh(s, pos)) return "CHH";
-    else if (is_c_at_g(s, pos)) return "CXG";
-    else return "CCG";
+    if (is_chh(s, pos)) return "CHH";
+    if (is_c_at_g(s, pos)) return "CXG";
+    return "CCG";
   }
   if (is_guanine(s[pos])) {
     if (is_cpg(s, pos - 1)) return "CpG";
-    else if (is_ddg(s, pos - 2)) return "CHH";
-    else if (is_c_at_g(s, pos - 2)) return "CXG";
-    else return "CCG";
+    if (is_ddg(s, pos - 2)) return "CHH";
+    if (is_c_at_g(s, pos - 2)) return "CXG";
+    return "CCG";
+  }
+  if (is_thymine(s[pos])) {
+    if (is_tpg(s, pos)) return "TpG";
+  }
+  if (is_adenine(s[pos])) {
+    if (is_cpa(s, pos - 1)) return "TpG";
   }
   return "N";
 }
@@ -198,9 +204,22 @@ template <class count_type>
 static bool
 has_mutated(const char base, const CountSet<count_type> &cs) {
   static const double MUTATION_DEFINING_FRACTION = 0.5;
-  return is_cytosine(base) ?
-    (cs.nG < MUTATION_DEFINING_FRACTION*(cs.neg_total())) :
-    (cs.pG < MUTATION_DEFINING_FRACTION*(cs.pos_total()));
+  // cytosine in forward strand in ref, check if not enough Gs
+  // in neg strand
+  if (is_cytosine(base))
+    return (cs.nG < MUTATION_DEFINING_FRACTION*(cs.neg_total()));
+
+  // cytosine in neg stand, check if not enough Gs in forward strand
+  if (is_guanine(base))
+    return (cs.pG < MUTATION_DEFINING_FRACTION*(cs.pos_total()));
+
+   // for TpGs, check if there are many Gs in reverse strand, implying
+   // that it's a C in the forward
+  if (is_thymine(base))
+    return (cs.nG > MUTATION_DEFINING_FRACTION*(cs.pos_total()));
+
+  // for CpAs, rc is a T, if mutated to c then we should see many Gs here
+  return (cs.pG > MUTATION_DEFINING_FRACTION*(cs.pos_total()));
 }
 
 inline static bool
@@ -215,25 +234,28 @@ static void
 write_output(output_type &out,
              const string &chrom_name, const string &chrom,
              const vector<CountSet<count_type> > &counts,
-             bool CPG_ONLY) {
+             const bool CPG_ONLY) {
 
-  for (size_t i = 0; i < counts.size(); ++i) {
+  const size_t lim = counts.size() - 2;
+  for (size_t i = 2; i < lim; ++i) {
     const char base = chrom[i];
-    if (is_cytosine(base) || is_guanine(base)) {
-      MSite the_site;
-      the_site.chrom = chrom_name;
-      the_site.pos = i;
-      the_site.strand = is_cytosine(base) ? '+' : '-';
-      const double unconverted = is_cytosine(base) ?
-        counts[i].unconverted_cytosine() : counts[i].unconverted_guanine();
-      const double converted = is_cytosine(base) ?
-        counts[i].converted_cytosine() : counts[i].converted_guanine();
-      the_site.n_reads = unconverted + converted;
-      the_site.meth = the_site.n_reads > 0 ?
-        unconverted/(converted + unconverted) : 0.0;
-      the_site.context = get_methylation_context_tag_from_genome(chrom, i) +
-        (has_mutated(base, counts[i]) ? "x" : "");
-      if (!CPG_ONLY || is_cpg_site(chrom, i))
+    //cerr << "base: " << base << "\n";
+    if (base == 'N') continue;
+    MSite the_site;
+    the_site.chrom = chrom_name;
+    the_site.pos = i;
+    the_site.strand = (is_cytosine(base) || is_thymine(base)) ? '+' : '-';
+    const double unconverted = (is_cytosine(base) || is_thymine(base)) ?
+      counts[i].unconverted_cytosine() : counts[i].unconverted_guanine();
+    const double converted = (is_cytosine(base) || is_thymine(base)) ?
+      counts[i].converted_cytosine() : counts[i].converted_guanine();
+    the_site.n_reads = unconverted + converted;
+    the_site.meth = the_site.n_reads > 0 ?
+      unconverted/(converted + unconverted) : 0.0;
+    the_site.context = get_methylation_context_tag_from_genome(chrom, i);
+    if (the_site.context != "N") {
+      the_site.context += (has_mutated(base, counts[i]) ? "x" : "");
+      if ((!CPG_ONLY || is_cpg_site(chrom, i)) && the_site.n_reads > 0)
         out << the_site << "\n";
     }
   }
@@ -272,7 +294,6 @@ process_reads(const bool VERBOSE, igzfstream &in, T &out,
   size_t j = 0; // current chromosome
 
   while (in >> mr) {
-
     // if chrom changes, output previous results, get new one
     if (counts.empty() || !mr.r.same_chrom(chrom_region)) {
 
@@ -315,9 +336,12 @@ process_reads(const bool VERBOSE, igzfstream &in, T &out,
     mr.apply_cigar();
 
     // do the work for this mapped read, depending on strand
-    if (mr.r.pos_strand())
+    if (mr.r.pos_strand()) {
       count_states_pos(mr, counts);
-    else count_states_neg(mr, counts);
+    }
+    else {
+      count_states_neg(mr, counts);
+    }
 
   }
   if (!counts.empty()) {// should be true after first iteration
