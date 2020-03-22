@@ -53,6 +53,17 @@ is_cpg(const std::string &s, size_t i) {
     is_cytosine(s[i]) && is_guanine(s[i + 1]);
 }
 
+inline bool
+is_tpg(const std::string &s, size_t i) {
+  return (i < (s.length() - 1)) &&
+    is_thymine(s[i]) && is_guanine(s[i + 1]);
+}
+
+inline bool
+is_cpa(const std::string &s, size_t i) {
+  return (i < (s.length() - 1)) &&
+    is_cytosine(s[i]) && is_adenine(s[i + 1]);
+}
 
 void
 adjust_region_ends(const std::vector<std::vector<GenomicRegion> > &clusters,
