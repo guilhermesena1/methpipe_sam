@@ -84,6 +84,11 @@ struct MSite {
     return context.length() >= 3 &&
       (context[0] == 'C' && context[1] == 'p' && context[2] == 'G');
   }
+  bool is_tpg() const {
+    return context.length() >= 3 &&
+      (context[0] == 'T' && context[1] == 'p' && context[2] == 'G');
+  }
+  
   bool is_chh() const {
     return context.length() >= 3 &&
       (context[0] == 'C' && context[1] == 'H' && context[2] == 'H');

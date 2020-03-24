@@ -99,6 +99,7 @@ main(int argc, const char **argv) {
     LevelsCounter cpg_symmetric("cpg_symmetric");
     LevelsCounter chh("chh");
     LevelsCounter cxg("cxg");
+    LevelsCounter tpg("tpg");
     LevelsCounter ccg("ccg");
     LevelsCounter cytosines("cytosines");
 
@@ -122,6 +123,7 @@ main(int argc, const char **argv) {
       }
       else if (site.is_chh()) chh.update(site);
       else if (site.is_ccg()) ccg.update(site);
+      else if (site.is_tpg()) tpg.update(site);
       else if (site.is_cxg()) cxg.update(site);
       else throw runtime_error("bad site context: " + site.context);
 
@@ -139,7 +141,8 @@ main(int argc, const char **argv) {
         << cpg_symmetric << endl
         << chh << endl
         << ccg << endl
-        << cxg << endl;
+        << cxg << endl
+        << tpg << endl;
   }
   catch (const std::exception &e) {
     cerr << e.what() << endl;
