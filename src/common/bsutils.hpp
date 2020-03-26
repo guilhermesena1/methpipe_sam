@@ -60,6 +60,12 @@ is_tpg(const std::string &s, size_t i) {
 }
 
 inline bool
+is_tpa(const std::string &s, size_t i) {
+  return (i < (s.length() - 1)) &&
+    is_thymine(s[i]) && is_adenine(s[i + 1]);
+}
+
+inline bool
 is_cpa(const std::string &s, size_t i) {
   return (i < (s.length() - 1)) &&
     is_cytosine(s[i]) && is_adenine(s[i + 1]);

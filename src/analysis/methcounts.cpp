@@ -1,4 +1,4 @@
-/*    methcounts: a program for counting the methylated and
+/*    iethcounts: a program for counting the methylated and
  *    unmethylated reads mapping over each CpG or C
  *
  *    Copyright (C) 2011-2014 University of Southern California and
@@ -147,9 +147,11 @@ get_methylation_context_tag_from_genome(const string &s, const size_t pos) {
   }
   if (is_thymine(s[pos])) {
     if (is_tpg(s, pos)) return "TpG";
+    if (is_tpa(s, pos)) return "TpA"; // negative control
   }
   if (is_adenine(s[pos])) {
     if (is_cpa(s, pos - 1)) return "TpG";
+    if (is_tpa(s, pos - 1)) return "TpA"; // negative control
   }
   return "N";
 }
@@ -219,7 +221,10 @@ has_mutated(const char base, const CountSet<count_type> &cs) {
     return (cs.nG > MUTATION_DEFINING_FRACTION*(cs.pos_total()));
 
   // for CpAs, rc is a T, if mutated to c then we should see many Gs here
-  return (cs.pG > MUTATION_DEFINING_FRACTION*(cs.pos_total()));
+  if (is_adenine(base))
+    return (cs.pG > MUTATION_DEFINING_FRACTION*(cs.pos_total()));
+
+  return false;
 }
 
 inline static bool
@@ -255,7 +260,7 @@ write_output(output_type &out,
     the_site.context = get_methylation_context_tag_from_genome(chrom, i);
     if (the_site.context != "N") {
       the_site.context += (has_mutated(base, counts[i]) ? "x" : "");
-      if ((!CPG_ONLY || is_cpg_site(chrom, i)) && the_site.n_reads > 0)
+      if ((!CPG_ONLY || is_cpg_site(chrom, i)))
         out << the_site << "\n";
     }
   }
