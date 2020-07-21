@@ -35,7 +35,8 @@ endif
 PROGS = lc_approx fast-liftover lift-filter \
 	merge-bsrate merge-methcounts \
 	duplicate-remover symmetric-cpgs \
-	clean-hairpins selectsites guessprotocol
+	clean-hairpins selectsites guessprotocol \
+	format_mapped_reads
 
 ifdef HAVE_HTSLIB
 	PROGS += to-mr
