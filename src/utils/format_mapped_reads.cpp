@@ -136,7 +136,7 @@ merge_mates(const size_t suffix_len, const size_t range,
 
   if (frag_len > 0) {
     merged.seq = string(frag_len, 'N');
-    mgerged.qual = string(frag_len, 'B');
+    merged.qual = string(frag_len, 'B');
     if (frag_len <= static_cast<int>(range)) {
       // lim_one: offset in merged sequence where overlap starts
       const size_t lim_one = one_right - one_left;
@@ -145,7 +145,7 @@ merge_mates(const size_t suffix_len, const size_t range,
 
       const size_t lim_two = two_right - two_left;
       copy(end(two.seq) - lim_two, end(two.seq), end(merged.seq) - lim_two);
-      copy(end(two.qual) - lim_two, end(two.qual), end(merged.scr) - lim_two);
+      copy(end(two.qual) - lim_two, end(two.qual), end(merged.qual) - lim_two);
 
       // deal with overlapping part
       if (overlap_left < overlap_right) {
@@ -167,8 +167,6 @@ merge_mates(const size_t suffix_len, const size_t range,
 
     merged.pos = rc ? two.pos : one.pos;
     // merged.r.set_end(merged.pos + frag_len);
-    merged.seq = seq;
-    merged.qual = scr;
     const string name(one.qname);
     merged.qname = "FRAG:" + name.substr(0, name.size() - suffix_len);
   }
