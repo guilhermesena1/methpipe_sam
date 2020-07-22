@@ -31,6 +31,7 @@
 #include "htslib_wrapper.hpp"
 #include "sam_record.hpp"
 #include "cigar_utils.hpp"
+#include "bisulfite_utils.hpp"
 
 using std::string;
 using std::vector;
@@ -46,27 +47,19 @@ using std::swap;
 
 static bool
 is_mapped(const sam_rec &aln) {
-  return true;
+  return !check_flag(aln, samflags::read_unmapped);
 }
 
 static bool
 is_primary(const sam_rec &aln) {
-  return true;
+  return !check_flag(aln, samflags::secondary_aln);
 }
 
 static bool
 is_mapped_single_end(const sam_rec &aln) {
-  return true;
-}
-
-static bool
-is_t_rich(const sam_rec &aln) {
-  return true;
-}
-
-static bool
-is_a_rich(const sam_rec &aln) {
-  return !is_t_rich(aln);
+  return is_mapped(aln) &&
+    (!check_flag(aln, samflags::read_paired) ||
+     check_flag(aln, samflags::mate_unmapped));
 }
 
 
@@ -125,6 +118,7 @@ merge_mates(const size_t suffix_len, const size_t range,
     two_right = get_r_end(two);
   }
 
+  // does this account for dovetail?
   const int frag_len = rc ? (one_right - two_left) : (two_right - one_left);
 
   // assert(len > 0);
@@ -140,11 +134,10 @@ merge_mates(const size_t suffix_len, const size_t range,
     if (frag_len <= static_cast<int>(range)) {
       // lim_one: offset in merged sequence where overlap starts
       const size_t lim_one = one_right - one_left;
-      copy(begin(one.seq), begin(one.seq) + lim_one, begin(merged.seq));
-      copy(begin(one.qual), begin(one.qual) + lim_one, begin(merged.qual));
-
       const size_t lim_two = two_right - two_left;
+      copy(begin(one.seq), begin(one.seq) + lim_one, begin(merged.seq));
       copy(end(two.seq) - lim_two, end(two.seq), end(merged.seq) - lim_two);
+      copy(begin(one.qual), begin(one.qual) + lim_one, begin(merged.qual));
       copy(end(two.qual) - lim_two, end(two.qual), end(merged.qual) - lim_two);
 
       // deal with overlapping part
@@ -165,10 +158,16 @@ merge_mates(const size_t suffix_len, const size_t range,
       }
     }
 
-    merged.pos = rc ? two.pos : one.pos;
-    // merged.r.set_end(merged.pos + frag_len);
     const string name(one.qname);
     merged.qname = "FRAG:" + name.substr(0, name.size() - suffix_len);
+    merged.rname = one.rname;
+    merged.cigar = one.cigar; // ADS: this is where the work is!!!
+    // merged.rnext = ""
+    // merged.pnext = 0
+    merged.tlen = merged.seq.length();
+    merged.pos = rc ? two.pos : one.pos;
+    if (rc)
+      set_flag(merged, samflags::read_rc);
   }
   return static_cast<size_t>(max(frag_len, 0));
 }
@@ -181,8 +180,8 @@ is_same_read(const size_t suffix_len, const sam_rec &a, const sam_rec &b) {
 /********Above are functions for merging pair-end reads********/
 
 static string
-remove_suffix(const sam_rec &aln, const size_t suffix_len) {
-  return aln.qname.substr(0, aln.qname.size() - suffix_len);
+remove_suffix(const string &x, const size_t suffix_len) {
+  return x.substr(0, x.size() - suffix_len);
 }
 
 static bool
@@ -483,10 +482,12 @@ main(int argc, const char **argv) {
 
     size_t count = 0;
     sam_rec aln;
+
     while (sam_reader >> aln) {
       if (is_mapped(aln) && is_primary(aln)) {
         if (is_mapped_single_end(aln)) {
-          if (is_a_rich(aln)) revcomp(aln);
+          if (is_a_rich(aln))
+            revcomp(aln);
           out << aln << '\n';
         }
         else { // is_mapped_paired(aln)
@@ -496,9 +497,10 @@ main(int argc, const char **argv) {
             dangling_mates[read_name] = aln; // no mate yet
           }
           else { // found a mate
-            if (is_t_rich(aln)) // earlier mate must have been t-rich
+            if (is_t_rich(aln)) // earlier mate must have been a-rich
               swap(aln, the_mate->second);
-            revcomp(aln); // put on same strand as earlier mate
+
+            // revcomp(aln); // put on same strand as earlier mate
 
             sam_rec merged;
             const size_t frag_len = merge_mates(suffix_len, max_frag_len,
@@ -523,9 +525,12 @@ main(int argc, const char **argv) {
             swap(to_keep, dangling_mates);
           }
         }
+        cerr << "going out" << endl;
         ++count;
       }
+      cerr << "bottom" << endl;
     }
+    cerr << endl;
 
     // flushing dangling_mates
     while (!dangling_mates.empty()) {
