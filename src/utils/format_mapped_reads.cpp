@@ -98,6 +98,18 @@ static size_t
 merge_mates(const size_t suffix_len, const size_t range,
             const sam_rec &one, const sam_rec &two, sam_rec &merged) {
 
+  string one_updated_seq(one.seq);
+  apply_cigar(one.cigar, one_updated_seq);
+
+  string two_updated_seq(two.seq);
+  apply_cigar(two.cigar, two_updated_seq);
+
+  string one_updated_qual(one.qual);
+  apply_cigar(one.cigar, one_updated_qual);
+
+  string two_updated_qual(two.qual);
+  apply_cigar(two.cigar, two_updated_qual, 'B');
+
   const bool rc = check_flag(one, samflags::read_rc);
   const uint32_t overlap_left = std::max(one.pos, two.pos);
   const uint32_t overlap_right = min(get_r_end(one), get_r_end(two));
@@ -135,18 +147,24 @@ merge_mates(const size_t suffix_len, const size_t range,
       // lim_one: offset in merged sequence where overlap starts
       const size_t lim_one = one_right - one_left;
       const size_t lim_two = two_right - two_left;
-      copy(begin(one.seq), begin(one.seq) + lim_one, begin(merged.seq));
-      copy(end(two.seq) - lim_two, end(two.seq), end(merged.seq) - lim_two);
-      copy(begin(one.qual), begin(one.qual) + lim_one, begin(merged.qual));
-      copy(end(two.qual) - lim_two, end(two.qual), end(merged.qual) - lim_two);
+      copy(begin(one_updated_seq), begin(one_updated_seq) + lim_one,
+           begin(merged.seq));
+      copy(end(two_updated_seq) - lim_two, end(two_updated_seq),
+           end(merged.seq) - lim_two);
+      copy(begin(one_updated_qual), begin(one_updated_qual) + lim_one,
+           begin(merged.qual));
+      copy(end(two_updated_qual) - lim_two, end(two_updated_qual),
+           end(merged.qual) - lim_two);
 
       // deal with overlapping part
       if (overlap_left < overlap_right) {
-        const size_t one_bads = count(begin(one.seq), end(one.seq), 'N');
-        const int info_one = one.seq.length() - (one_bads + one.mapq);
+        const size_t one_bads =
+          count(begin(one_updated_seq), end(one_updated_seq), 'N');
+        const int info_one = one_updated_seq.length() - (one_bads + one.mapq);
 
-        const size_t two_bads = count(begin(two.seq), end(two.seq), 'N');
-        const int info_two = two.seq.length() - (two_bads + two.mapq);
+        const size_t two_bads =
+          count(begin(two_updated_seq), end(two_updated_seq), 'N');
+        const int info_two = two_updated_seq.length() - (two_bads + two.mapq);
 
         // use the mate with the most info to fill in the overlap
         if (info_one >= info_two)
@@ -359,13 +377,14 @@ precedes_by_more_than(const sam_rec &a, const sam_rec &b,
 //   // size_t flag, start, mapq_score, mate_start;
 //   // int seg_len;
 
-//   // std::istringstream iss(str);
-//   // if (!(iss >> name >> flag >> chrom >> start >> mapq_score >> CIGAR
-//   //       >> mate_name >> mate_start >> seg_len >> seq >> qual
-//   //       >> orientation_str >> conversion_str >> mismatch_str
-//   //       >> mismatch_type_str >> seq_genome_str)) {
-//   //   good = false;
-//   //   throw runtime_error("malformed line in bs_seeker SAM format:\n" + str);
+// std::istringstream iss(str);
+// if (!(iss
+//       >> name >> flag >> chrom >> start >> mapq_score >> CIGAR
+//       >> mate_name >> mate_start >> seg_len >> seq >> qual
+//       >> orientation_str >> conversion_str >> mismatch_str
+//       >> mismatch_type_str >> seq_genome_str)) {
+// good = false;
+//   throw runtime_error("malformed line in bs_seeker SAM format:\n" + str);
 //   // }
 
 //   // bs_seeker also doesn't keep sequencing quality information?
@@ -396,8 +415,6 @@ precedes_by_more_than(const sam_rec &a, const sam_rec &b,
 // }
 
 
-// bool
-// SAMReader::get_SAMRecord(const string &str, SAMRecord &samr) {
 //   if (mapper == "bsmap")
 //     return get_SAMRecord_bsmap(str, samr);
 //   else if (mapper == "bismark")
@@ -518,19 +535,17 @@ main(int argc, const char **argv) {
             unordered_map<string, sam_rec> to_keep;
             for (auto &&mates : dangling_mates)
               if (precedes_by_more_than(the_mate->second, aln, max_frag_len)) {
-                if (is_a_rich(mates.second)) revcomp(mates.second);
+                if (is_a_rich(mates.second))
+                  revcomp(mates.second);
                 out << mates.second << endl;
               }
               else to_keep.insert(mates);
             swap(to_keep, dangling_mates);
           }
         }
-        cerr << "going out" << endl;
         ++count;
       }
-      cerr << "bottom" << endl;
     }
-    cerr << endl;
 
     // flushing dangling_mates
     while (!dangling_mates.empty()) {
