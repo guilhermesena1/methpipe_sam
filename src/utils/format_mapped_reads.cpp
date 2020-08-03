@@ -45,6 +45,9 @@ using std::runtime_error;
 using std::unordered_map;
 using std::swap;
 
+// ADS: do we need to check that both mates are on the same strand? Or
+// that they are on opposite strands?
+
 static bool
 is_mapped(const sam_rec &aln) {
   return !check_flag(aln, samflags::read_unmapped);
@@ -62,6 +65,10 @@ is_mapped_single_end(const sam_rec &aln) {
      check_flag(aln, samflags::mate_unmapped));
 }
 
+inline bool
+is_rc(sam_rec &aln) {
+  return check_flag(aln, samflags::read_rc);
+}
 
 static void
 flip_strand(sam_rec &aln) {
@@ -94,9 +101,98 @@ fill_overlap(const bool rc, const sam_rec &sr, const size_t start,
   copy(begin(sr.qual) + a, begin(sr.qual) + b, begin(scr) + offset);
 }
 
+
+void
+format_pe(const pe_result &res, const ChromLookup &cl,
+          string &read1, string &read2,
+          const string &name1, const string &name2, ofstream &out) {
+
+  uint32_t r_s1 = 0, r_e1 = 0, chr1 = 0;
+  if (!chrom_and_posn(cl, read1, res.r1.pos, r_s1, r_e1, chr1)) return; // cowardly
+
+  uint32_t r_s2 = 0, r_e2 = 0, chr2 = 0;
+  if (!chrom_and_posn(cl, read2, res.r2.pos, r_s2, r_e2, chr2)) return; // cowardly
+  // GenomicRegion gr2(cl.names[chr2], r_s2, r_e2, name2, res.r2.diffs, res.r2.strand());
+  // out << gr2 << '\t' << read2 << endl;
+
+  if (chr1 != chr2) return; //cowardly
+
+  revcomp_inplace(read2);
+
+  // Select the end points based on orientation, which indicates which
+  // end is to the left (first) in the genome. Set the strand and read
+  // name based on the first end.
+  auto gr = res.rc() ?
+    GenomicRegion(cl.names[chr2], r_s2, r_e1, name2, res.diffs(), res.strand()) :
+    GenomicRegion(cl.names[chr1], r_s1, r_e2, name1, res.diffs(), res.strand());
+
+  const int spacer = get_spacer_rlen(res, r_s1, r_e1, r_s2, r_e2);
+  if (spacer >= 0) {
+    /* fragments longer than or equal to 2x read length: this size of
+     * the spacer ("_") is determined based on the reference positions
+     * of the two ends, and depends on whether the mapping is on the
+     * negative strand of the genome.
+     *
+     * left                                                             right
+     * r_s1                         r_e1   r_s2                         r_e2
+     * [------------end1------------]______[------------end2------------]
+     */
+    // name = "FRAG_L:" + one.gr.get_name()); // DEBUG
+    seq = read1 + string(spacer, 'N');
+    read1 += read2;
+  }
+  else {
+    const int head = get_head_rlen(res, r_s1, r_e1, r_s2, r_e2);
+    if (head >= 0) { //
+    /* fragment longer than or equal to the read length, but shorter
+     * than twice the read length: this is determined by obtaining the
+     * size of the "head" in the diagram below: the portion of end1
+     * that is not within [=]. If the read maps to the positive
+     * strand, this depends on the reference start of end2 minus the
+     * reference start of end1. For negative strand, this is reference
+     * start of end1 minus reference start of end2.
+     *
+     * left                                                 right
+     * r_s1                   r_s2   r_e1                   r_e2
+     * [------------end1------[======]------end2------------]
+     */
+      gr.set_name("FRAG_M:" + gr.get_name()); // DEBUG
+      seq = read1.substr(0, head);
+      seq += read2;
+    }
+    else {
+      /* dovetail fragments shorter than read length: this is
+       * identified if the above conditions are not satisfied, but
+       * there is still some overlap. The overlap will be at the 5'
+       * ends of reads, which in theory shouldn't happen unless the
+       * two ends are covering identical genomic intervals.
+       *
+       * left                                           right
+       * r_s2             r_s1         r_e2             r_e1
+       * [--end2----------[============]----------end1--]
+       */
+      const int overlap = get_overlap_rlen(res, r_s1, r_e1, r_s2, r_e2);
+      if (overlap > 0) {
+        // gr.set_name("FRAG_S:" + gr.get_name()); // DEBUG
+        seq = read1.substr(0, overlap);
+      }
+      else throw runtime_error("error: format_pe fall through");
+    }
+  }
+
+  if (res.a_rich()) { // final revcomp if the first end was a-rich
+    gr.set_strand(gr.get_strand() == '+' ? '-' : '+');
+    revcomp_inplace(read1);
+  }
+}
+
+
 static size_t
 merge_mates(const size_t suffix_len, const size_t range,
             const sam_rec &one, const sam_rec &two, sam_rec &merged) {
+
+  assert(is_rc(one) == is_rc(two));
+  assert(is_t_rich(one) == is_t_rich(two));
 
   string one_updated_seq(one.seq);
   apply_cigar(one.cigar, one_updated_seq);
@@ -111,22 +207,23 @@ merge_mates(const size_t suffix_len, const size_t range,
   apply_cigar(two.cigar, two_updated_qual, 'B');
 
   const bool rc = check_flag(one, samflags::read_rc);
-  const uint32_t overlap_left = std::max(one.pos, two.pos);
-  const uint32_t overlap_right = min(get_r_end(one), get_r_end(two));
+
+  const uint32_t merged_left = std::max(one.pos, two.pos);
+  const uint32_t merged_right = min(get_r_end(one), get_r_end(two));
 
   uint32_t one_left = 0, one_right = 0, two_left = 0, two_right = 0;
   if (rc) {
-    one_left = max(overlap_right, one.pos);
+    one_left = max(merged_right, one.pos);
     one_right = get_r_end(one);
 
     two_left = two.pos;
-    two_right = min(overlap_left, get_r_end(two));
+    two_right = min(merged_left, get_r_end(two));
   }
   else {
     one_left = one.pos;
-    one_right = min(overlap_left, get_r_end(one));
+    one_right = min(merged_left, get_r_end(one));
 
-    two_left = max(overlap_right, two.pos);
+    two_left = max(merged_right, two.pos);
     two_right = get_r_end(two);
   }
 
@@ -147,17 +244,13 @@ merge_mates(const size_t suffix_len, const size_t range,
       // lim_one: offset in merged sequence where overlap starts
       const size_t lim_one = one_right - one_left;
       const size_t lim_two = two_right - two_left;
-      copy(begin(one_updated_seq), begin(one_updated_seq) + lim_one,
-           begin(merged.seq));
-      copy(end(two_updated_seq) - lim_two, end(two_updated_seq),
-           end(merged.seq) - lim_two);
-      copy(begin(one_updated_qual), begin(one_updated_qual) + lim_one,
-           begin(merged.qual));
-      copy(end(two_updated_qual) - lim_two, end(two_updated_qual),
-           end(merged.qual) - lim_two);
+      copy(begin(one_updated_seq), begin(one_updated_seq) + lim_one, begin(merged.seq));
+      copy(end(two_updated_seq) - lim_two, end(two_updated_seq), end(merged.seq) - lim_two);
+      copy(begin(one_updated_qual), begin(one_updated_qual) + lim_one, begin(merged.qual));
+      copy(end(two_updated_qual) - lim_two, end(two_updated_qual), end(merged.qual) - lim_two);
 
       // deal with overlapping part
-      if (overlap_left < overlap_right) {
+      if (merged_left < merged_right) {
         const size_t one_bads =
           count(begin(one_updated_seq), end(one_updated_seq), 'N');
         const int info_one = one_updated_seq.length() - (one_bads + one.mapq);
@@ -168,10 +261,10 @@ merge_mates(const size_t suffix_len, const size_t range,
 
         // use the mate with the most info to fill in the overlap
         if (info_one >= info_two)
-          fill_overlap(rc, one, overlap_left, overlap_right, lim_one,
+          fill_overlap(rc, one, merged_left, merged_right, lim_one,
                        merged.seq, merged.qual);
         else
-          fill_overlap(rc, two, overlap_left, overlap_right, lim_one,
+          fill_overlap(rc, two, merged_left, merged_right, lim_one,
                        merged.seq, merged.qual);
       }
     }
@@ -516,8 +609,6 @@ main(int argc, const char **argv) {
           else { // found a mate
             if (is_t_rich(aln)) // earlier mate must have been a-rich
               swap(aln, the_mate->second);
-
-            // revcomp(aln); // put on same strand as earlier mate
 
             sam_rec merged;
             const size_t frag_len = merge_mates(suffix_len, max_frag_len,
