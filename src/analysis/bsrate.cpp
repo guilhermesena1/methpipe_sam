@@ -52,7 +52,7 @@ using std::unordered_map;
 using std::runtime_error;
 
 inline bool
-is_rc(sam_rec &aln) {
+is_rc(const sam_rec &aln) {
   return check_flag(aln, samflags::read_rc);
 }
 
