@@ -44,6 +44,7 @@ using std::min;
 using std::runtime_error;
 using std::unordered_map;
 using std::swap;
+using std::to_string;
 
 // ADS: do we need to check that both mates are on the same strand? Or
 // that they are on opposite strands?
@@ -66,7 +67,7 @@ is_mapped_single_end(const sam_rec &aln) {
 }
 
 inline bool
-is_rc(sam_rec &aln) {
+is_rc(const sam_rec &aln) {
   return check_flag(aln, samflags::read_rc);
 }
 
@@ -91,74 +92,72 @@ get_r_end(const sam_rec &sr) {
   return sr.pos + cigar_rseq_ops(sr.cigar);
 }
 
-/********Below are functions for merging pair-end reads********/
-static void
-fill_overlap(const bool rc, const sam_rec &sr, const size_t start,
-             const size_t end, const size_t offset, string &seq, string &scr) {
-  const size_t a = rc ? (get_r_end(sr) - end) : (start - sr.pos);
-  const size_t b = rc ? (get_r_end(sr) - start) : (end -  sr.pos);
-  copy(begin(sr.seq) + a, begin(sr.seq) + b, begin(seq) + offset);
-  copy(begin(sr.qual) + a, begin(sr.qual) + b, begin(scr) + offset);
-}
 
+static size_t
+merge_mates(const size_t suffix_len, const size_t range,
+            const sam_rec &one, const sam_rec &two, sam_rec &merged) {
 
-void
-format_pe(const pe_result &res, const ChromLookup &cl,
-          string &read1, string &read2,
-          const string &name1, const string &name2, ofstream &out) {
+  assert(is_rc(one) == false && is_rc(two) == true);
+  if (one.pos > two.pos) {
+    cerr << one << endl
+         << two << endl
+         << endl;
+  }
 
-  uint32_t r_s1 = 0, r_e1 = 0, chr1 = 0;
-  if (!chrom_and_posn(cl, read1, res.r1.pos, r_s1, r_e1, chr1)) return; // cowardly
+  assert(is_t_rich(one) == is_t_rich(two));
 
-  uint32_t r_s2 = 0, r_e2 = 0, chr2 = 0;
-  if (!chrom_and_posn(cl, read2, res.r2.pos, r_s2, r_e2, chr2)) return; // cowardly
-  // GenomicRegion gr2(cl.names[chr2], r_s2, r_e2, name2, res.r2.diffs, res.r2.strand());
-  // out << gr2 << '\t' << read2 << endl;
+  merged = one;
 
-  if (chr1 != chr2) return; //cowardly
+  const int one_s = one.pos;
+  const int one_e = cigar_rseq_ops(one.cigar);
 
-  revcomp_inplace(read2);
+  const int two_s = two.pos;
+  const int two_e = cigar_rseq_ops(two.cigar);
 
-  // Select the end points based on orientation, which indicates which
-  // end is to the left (first) in the genome. Set the strand and read
-  // name based on the first end.
-  auto gr = res.rc() ?
-    GenomicRegion(cl.names[chr2], r_s2, r_e1, name2, res.diffs(), res.strand()) :
-    GenomicRegion(cl.names[chr1], r_s1, r_e2, name1, res.diffs(), res.strand());
-
-  const int spacer = get_spacer_rlen(res, r_s1, r_e1, r_s2, r_e2);
+  const int spacer = two_s - one_e;
   if (spacer >= 0) {
-    /* fragments longer than or equal to 2x read length: this size of
-     * the spacer ("_") is determined based on the reference positions
-     * of the two ends, and depends on whether the mapping is on the
-     * negative strand of the genome.
+    /* fragments longer enough that there is space between them: this
+     * size of the spacer ("_") is determined based on the reference
+     * positions of the two ends, and here we assume "one" maps to
+     * positive genome strand.
      *
-     * left                                                             right
-     * r_s1                         r_e1   r_s2                         r_e2
+     * left                                                         right
+     * one_s                    one_e      two_s                    two_e
      * [------------end1------------]______[------------end2------------]
      */
-    // name = "FRAG_L:" + one.gr.get_name()); // DEBUG
-    seq = read1 + string(spacer, 'N');
-    read1 += read2;
+    merged.seq = one.seq + revcomp(two.seq);
+    // ADS: need to take care of soft clipping in between;
+    merged.cigar = one.cigar + to_string(spacer) + "N" + two.cigar;
+    merged.qual = (one.qual == "*" ? one.qual : one.qual + revcomp(two.qual));
+
   }
   else {
-    const int head = get_head_rlen(res, r_s1, r_e1, r_s2, r_e2);
-    if (head >= 0) { //
-    /* fragment longer than or equal to the read length, but shorter
-     * than twice the read length: this is determined by obtaining the
-     * size of the "head" in the diagram below: the portion of end1
-     * that is not within [=]. If the read maps to the positive
-     * strand, this depends on the reference start of end2 minus the
-     * reference start of end1. For negative strand, this is reference
-     * start of end1 minus reference start of end2.
-     *
-     * left                                                 right
-     * r_s1                   r_s2   r_e1                   r_e2
-     * [------------end1------[======]------end2------------]
-     */
-      gr.set_name("FRAG_M:" + gr.get_name()); // DEBUG
-      seq = read1.substr(0, head);
-      seq += read2;
+    const int head = two_s - one_s;
+    if (head >= 0) {
+      /* fragment longer than or equal to the read length, but shorter
+       * than twice the read length: this is determined by obtaining
+       * the size of the "head" in the diagram below: the portion of
+       * end1 that is not within [=]. If the read maps to the positive
+       * strand, this depends on the reference start of end2 minus the
+       * reference start of end1. For negative strand, this is
+       * reference start of end1 minus reference start of end2.
+       *
+       * <======= head ================>
+       *
+       * left                                             right
+       * one_s              two_s      one_e              two_e
+       * [------------end1------[======]------end2------------]
+       */
+      truncate_cigar_r(merged.cigar, head);
+      merged.cigar += two.cigar;
+      const uint32_t merged_seq_len = cigar_qseq_ops(merged.cigar);
+      // ADS: need to take care of soft clipping in between;
+      merged.seq.resize(merged_seq_len);
+      merged.seq += two.seq;
+      if (merged.qual != "*") {
+        merged.qual.resize(merged_seq_len);
+        merged.qual += two.qual;
+      }
     }
     else {
       /* dovetail fragments shorter than read length: this is
@@ -167,120 +166,25 @@ format_pe(const pe_result &res, const ChromLookup &cl,
        * ends of reads, which in theory shouldn't happen unless the
        * two ends are covering identical genomic intervals.
        *
-       * left                                           right
-       * r_s2             r_s1         r_e2             r_e1
+       * left                                       right
+       * two_s            one_s    two_e            one_e
        * [--end2----------[============]----------end1--]
        */
-      const int overlap = get_overlap_rlen(res, r_s1, r_e1, r_s2, r_e2);
-      if (overlap > 0) {
-        // gr.set_name("FRAG_S:" + gr.get_name()); // DEBUG
-        seq = read1.substr(0, overlap);
-      }
-      else throw runtime_error("error: format_pe fall through");
-    }
-  }
-
-  if (res.a_rich()) { // final revcomp if the first end was a-rich
-    gr.set_strand(gr.get_strand() == '+' ? '-' : '+');
-    revcomp_inplace(read1);
-  }
-}
-
-
-static size_t
-merge_mates(const size_t suffix_len, const size_t range,
-            const sam_rec &one, const sam_rec &two, sam_rec &merged) {
-
-  assert(is_rc(one) == is_rc(two));
-  assert(is_t_rich(one) == is_t_rich(two));
-
-  string one_updated_seq(one.seq);
-  apply_cigar(one.cigar, one_updated_seq);
-
-  string two_updated_seq(two.seq);
-  apply_cigar(two.cigar, two_updated_seq);
-
-  string one_updated_qual(one.qual);
-  apply_cigar(one.cigar, one_updated_qual);
-
-  string two_updated_qual(two.qual);
-  apply_cigar(two.cigar, two_updated_qual, 'B');
-
-  const bool rc = check_flag(one, samflags::read_rc);
-
-  const uint32_t merged_left = std::max(one.pos, two.pos);
-  const uint32_t merged_right = min(get_r_end(one), get_r_end(two));
-
-  uint32_t one_left = 0, one_right = 0, two_left = 0, two_right = 0;
-  if (rc) {
-    one_left = max(merged_right, one.pos);
-    one_right = get_r_end(one);
-
-    two_left = two.pos;
-    two_right = min(merged_left, get_r_end(two));
-  }
-  else {
-    one_left = one.pos;
-    one_right = min(merged_left, get_r_end(one));
-
-    two_left = max(merged_right, two.pos);
-    two_right = get_r_end(two);
-  }
-
-  // does this account for dovetail?
-  const int frag_len = rc ? (one_right - two_left) : (two_right - one_left);
-
-  // assert(len > 0);
-  // if the above assertion fails, it usually means the mair is
-  // discordant (end1 downstream of end2). Also it means the SAM flag
-  // of this pair of reads is not properly set. To avoid termination,
-  // currently this assertion is ignored but no output will be
-  // generated for discordant pairs.
-
-  if (frag_len > 0) {
-    merged.seq = string(frag_len, 'N');
-    merged.qual = string(frag_len, 'B');
-    if (frag_len <= static_cast<int>(range)) {
-      // lim_one: offset in merged sequence where overlap starts
-      const size_t lim_one = one_right - one_left;
-      const size_t lim_two = two_right - two_left;
-      copy(begin(one_updated_seq), begin(one_updated_seq) + lim_one, begin(merged.seq));
-      copy(end(two_updated_seq) - lim_two, end(two_updated_seq), end(merged.seq) - lim_two);
-      copy(begin(one_updated_qual), begin(one_updated_qual) + lim_one, begin(merged.qual));
-      copy(end(two_updated_qual) - lim_two, end(two_updated_qual), end(merged.qual) - lim_two);
-
-      // deal with overlapping part
-      if (merged_left < merged_right) {
-        const size_t one_bads =
-          count(begin(one_updated_seq), end(one_updated_seq), 'N');
-        const int info_one = one_updated_seq.length() - (one_bads + one.mapq);
-
-        const size_t two_bads =
-          count(begin(two_updated_seq), end(two_updated_seq), 'N');
-        const int info_two = two_updated_seq.length() - (two_bads + two.mapq);
-
-        // use the mate with the most info to fill in the overlap
-        if (info_one >= info_two)
-          fill_overlap(rc, one, merged_left, merged_right, lim_one,
-                       merged.seq, merged.qual);
-        else
-          fill_overlap(rc, two, merged_left, merged_right, lim_one,
-                       merged.seq, merged.qual);
+      const int overlap = two_e - one_s;
+      if (overlap >= 0) {
+        truncate_cigar_r(merged.cigar, overlap);
+        const uint32_t merged_seq_qlen = cigar_qseq_ops(merged.cigar);
+        merged.seq.resize(merged_seq_qlen);
+        if (merged.qual != "*")
+          merged.qual.resize(merged_seq_qlen);
       }
     }
-
-    const string name(one.qname);
-    merged.qname = "FRAG:" + name.substr(0, name.size() - suffix_len);
-    merged.rname = one.rname;
-    merged.cigar = one.cigar; // ADS: this is where the work is!!!
-    // merged.rnext = ""
-    // merged.pnext = 0
-    merged.tlen = merged.seq.length();
-    merged.pos = rc ? two.pos : one.pos;
-    if (rc)
-      set_flag(merged, samflags::read_rc);
   }
-  return static_cast<size_t>(max(frag_len, 0));
+  merged.rnext = "*";
+  merged.pnext = 0;
+  merged.tlen = 0;
+
+  return two_e - one_s;
 }
 
 inline static bool
@@ -541,9 +445,6 @@ main(int argc, const char **argv) {
                            "sam/bam_file");
     opt_parse.add_opt("output", 'o', "Name of output file",
                       false, outfile);
-    opt_parse.add_opt("mapper", 'm',
-                      "Original mapper: bismark, bs_seeker or general",
-                      true, mapper);
     opt_parse.add_opt("suff", 's', "read name suffix length (default: 1)",
                       false, suffix_len);
     opt_parse.add_opt("max-frag", 'L', "maximum allowed insert size",
@@ -581,14 +482,10 @@ main(int argc, const char **argv) {
            << "[output file: "
            << (outfile.empty() ? "stdout" : outfile) << "]" << endl;
 
-    // if (mapper == "bsmap")
-    //   throw runtime_error("bsmap no longer supported [use general]");
-    // if (mapper != "bismark" && mapper != "bs_seeker" && mapper != "general")
-    //   throw runtime_error("mapper not supported: " + mapper);
-
-
-    SAMReader sam_reader(mapped_reads_file, mapper);
+    SAMReader sam_reader(mapped_reads_file);
     unordered_map<string, sam_rec> dangling_mates;
+
+    out << sam_reader.get_header(); // includes newline
 
     size_t count = 0;
     sam_rec aln;
@@ -607,12 +504,13 @@ main(int argc, const char **argv) {
             dangling_mates[read_name] = aln; // no mate yet
           }
           else { // found a mate
-            if (is_t_rich(aln)) // earlier mate must have been a-rich
+
+            if (!is_rc(aln)) // earlier mate must have been a-rich
               swap(aln, the_mate->second);
 
             sam_rec merged;
-            const size_t frag_len = merge_mates(suffix_len, max_frag_len,
-                                                the_mate->second, aln, merged);
+            const int frag_len = merge_mates(suffix_len, max_frag_len,
+                                             the_mate->second, aln, merged);
             if (frag_len <= max_frag_len)
               out << merged << '\n';
             else if (frag_len > 0)
