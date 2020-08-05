@@ -78,11 +78,13 @@ count_states_pos(const bool INCLUDE_CPGS, const string &chrom,
                  vector<size_t> &unconv, vector<size_t> &conv,
                  vector<size_t> &err, size_t &hanging) {
 
-  const size_t width = cigar_qseq_ops(aln.cigar);
+  const size_t width = cigar_rseq_ops(aln.cigar);
   const size_t offset = aln.pos - 1;
 
   string seq(aln.seq);
   apply_cigar(aln.cigar, seq);
+
+  assert(seq.size() == width);
 
   size_t position = offset;
   if (chrom.length() < offset) // at least one bp of read on chr
@@ -112,7 +114,7 @@ count_states_neg(const bool INCLUDE_CPGS, const string &chrom,
                  vector<size_t> &unconv, vector<size_t> &conv,
                  vector<size_t> &err, size_t &hanging) {
 
-  const size_t width = cigar_qseq_ops(aln.cigar);
+  const size_t width = cigar_rseq_ops(aln.cigar);
   const size_t offset = aln.pos - 1;
 
   // ADS: reverse complement twice because the cigar is applied
@@ -121,6 +123,8 @@ count_states_neg(const bool INCLUDE_CPGS, const string &chrom,
   revcomp_inplace(seq);
   apply_cigar(aln.cigar, seq);
   revcomp_inplace(seq);
+
+  assert(seq.size() == width);
 
   size_t position = offset + width - 1;
   assert(offset < chrom.length()); // at least one bp of read on chr
