@@ -17,6 +17,16 @@
  * General Public License for more details.
  */
 
+/* The output of this program should include mapped reads that are
+ * T-rich, which might require reverse-complementing sequences, and
+ * switching their strand, along with any tag that indicates T-rich
+ * vs. A-rich.
+ *
+ * Focusing only on single end reads, for each supported read mapping
+ * tool, we require a means of determining whether or not the read is
+ * A-rich and then changing that format to indicate T-rich.
+ */
+
 #include <string>
 #include <vector>
 #include <iostream>
@@ -31,7 +41,7 @@
 #include "htslib_wrapper.hpp"
 #include "sam_record.hpp"
 #include "cigar_utils.hpp"
-#include "bisulfite_utils.hpp"
+// #include "bisulfite_utils.hpp"
 
 using std::string;
 using std::vector;
@@ -48,6 +58,22 @@ using std::to_string;
 
 // ADS: do we need to check that both mates are on the same strand? Or
 // that they are on opposite strands?
+
+static bool
+abismal_is_a_rich(const sam_rec &aln) {
+  auto the_cv_tag = find_if(begin(aln.tags), end(aln.tags),
+                            [](const string &t) {
+                              return t.compare (0, 3, "CV:") == 0;
+                            });
+  if (the_cv_tag != end(aln.tags))
+    return the_cv_tag->back() == 'A';
+  return false;
+}
+
+static bool
+is_a_rich(const sam_rec &aln) {
+  return abismal_is_a_rich(aln);
+}
 
 static bool
 is_mapped(const sam_rec &aln) {
@@ -79,12 +105,23 @@ flip_strand(sam_rec &aln) {
     set_flag(aln, samflags::read_rc);
 }
 
-
 static void
-revcomp(sam_rec &aln) {
+flip_conversion(sam_rec &aln) {
   flip_strand(aln); // set strand to opposite of current value
   revcomp_inplace(aln.seq); // reverse complement sequence
   std::reverse(begin(aln.qual), end(aln.qual)); // and quality scores
+
+  // ADS: assuming abismal here
+  auto the_cv_tag = find_if(begin(aln.tags), end(aln.tags),
+                            [](const string &t) {
+                              return t.compare (0, 3, "CV:") == 0;
+                            });
+  if (the_cv_tag != end(aln.tags)) {
+    if (abismal_is_a_rich(aln))
+      the_cv_tag->back() = 'T';
+    else
+      the_cv_tag->back() = 'A';
+  }
 }
 
 static uint32_t
@@ -98,21 +135,18 @@ merge_mates(const size_t suffix_len, const size_t range,
             const sam_rec &one, const sam_rec &two, sam_rec &merged) {
 
   assert(is_rc(one) == false && is_rc(two) == true);
-  if (one.pos > two.pos) {
-    cerr << one << endl
-         << two << endl
-         << endl;
-  }
 
-  assert(is_t_rich(one) == is_t_rich(two));
+  // ADS: not sure this can be consistent across mappers
+  assert(is_a_rich(one) != is_a_rich(two));
 
   merged = one;
 
-  const int one_s = one.pos;
-  const int one_e = cigar_rseq_ops(one.cigar);
-
-  const int two_s = two.pos;
-  const int two_e = cigar_rseq_ops(two.cigar);
+  // arithmetic easier using base 0 so subtracting 1 from pos
+  const int one_s = one.pos - 1;
+  const int one_e = one_s + cigar_rseq_ops(one.cigar);
+  const int two_s = two.pos - 1;
+  const int two_e = two_s + cigar_rseq_ops(two.cigar);
+  assert(one_s >= 0 && two_s >= 0);
 
   const int spacer = two_s - one_e;
   if (spacer >= 0) {
@@ -129,7 +163,6 @@ merge_mates(const size_t suffix_len, const size_t range,
     // ADS: need to take care of soft clipping in between;
     merged.cigar = one.cigar + to_string(spacer) + "N" + two.cigar;
     merged.qual = (one.qual == "*" ? one.qual : one.qual + revcomp(two.qual));
-
   }
   else {
     const int head = two_s - one_s;
@@ -149,13 +182,14 @@ merge_mates(const size_t suffix_len, const size_t range,
        * [------------end1------[======]------end2------------]
        */
       truncate_cigar_r(merged.cigar, head);
+      const uint32_t one_seq_len = cigar_qseq_ops(merged.cigar);
       merged.cigar += two.cigar;
-      const uint32_t merged_seq_len = cigar_qseq_ops(merged.cigar);
+      merge_equal_neighbor_cigar_ops(merged.cigar);
       // ADS: need to take care of soft clipping in between;
-      merged.seq.resize(merged_seq_len);
-      merged.seq += two.seq;
+      merged.seq.resize(one_seq_len);
+      merged.seq += revcomp(two.seq);
       if (merged.qual != "*") {
-        merged.qual.resize(merged_seq_len);
+        merged.qual.resize(one_seq_len);
         merged.qual += two.qual;
       }
     }
@@ -173,10 +207,10 @@ merge_mates(const size_t suffix_len, const size_t range,
       const int overlap = two_e - one_s;
       if (overlap >= 0) {
         truncate_cigar_r(merged.cigar, overlap);
-        const uint32_t merged_seq_qlen = cigar_qseq_ops(merged.cigar);
-        merged.seq.resize(merged_seq_qlen);
+        const uint32_t overlap_qlen = cigar_qseq_ops(merged.cigar);
+        merged.seq.resize(overlap_qlen);
         if (merged.qual != "*")
-          merged.qual.resize(merged_seq_qlen);
+          merged.qual.resize(overlap_qlen);
       }
     }
   }
@@ -185,11 +219,6 @@ merge_mates(const size_t suffix_len, const size_t range,
   merged.tlen = 0;
 
   return two_e - one_s;
-}
-
-inline static bool
-is_same_read(const size_t suffix_len, const sam_rec &a, const sam_rec &b) {
-  return std::equal(begin(a.qname), end(a.qname) - suffix_len, begin(b.qname));
 }
 
 /********Above are functions for merging pair-end reads********/
@@ -207,225 +236,6 @@ precedes_by_more_than(const sam_rec &a, const sam_rec &b,
 }
 
 
-// ////////////////////////////////////////
-// // BSMAP
-// ////////////////////////////////////////
-
-// class BSMAPFLAG : public FLAG {
-// public:
-//   BSMAPFLAG(const size_t f) : FLAG(f) {}
-// };
-
-// inline static void
-// bsmap_get_strand(const string &strand_str, string &strand, string &bs_forward) {
-//   strand = strand_str.substr(5, 1);
-//   bs_forward = strand_str.substr(6, 1);
-//   if (bs_forward == "-")
-//     strand = (strand == "+" ? "-" : "+");
-// }
-
-// bool
-// SAMReader::get_SAMRecord_bsmap(const string &str, sam_rec &samr) {
-
-//   cerr << "WARNING: "<< "[BSMAP Converter] test "
-//        << "version: may contain bugs" << endl;
-
-//   string name, chrom, CIGAR, mate_name, seq, qual, strand_str, mismatch_str;
-//   size_t flag, start, mapq_score, mate_start;
-//   int seg_len;
-
-//   std::istringstream iss(str);
-//   if (!(iss >> name >> flag >> chrom >> start >> mapq_score >> CIGAR
-//         >> mate_name >> mate_start >> seg_len >> seq >> qual
-//         >> mismatch_str >> strand_str)) {
-//     good = false;
-//     throw runtime_error("malformed line in bsmap SAM format:\n" + str);
-//   }
-
-//   BSMAPFLAG Flag(flag);
-
-//   samr.mr.r.set_chrom(chrom);
-//   samr.mr.r.set_start(start - 1);
-//   samr.mr.r.set_name(name);
-//   samr.mr.r.set_score(atoi(mismatch_str.substr(5).c_str()));
-
-//   string strand, bs_forward;
-//   bsmap_get_strand(strand_str, strand, bs_forward);
-//   samr.mr.r.set_strand(strand[0]);
-
-//   string new_seq, new_qual;
-//   apply_CIGAR(seq, qual, CIGAR, new_seq, new_qual);
-
-//   samr.mr.r.set_end(samr.mr.r.get_start() + new_seq.size());
-//   samr.mr.seq = new_seq;
-//   samr.mr.qual = new_qual;
-
-//   samr.is_Trich = Flag.is_Trich();
-//   samr.is_mapping_paired = Flag.is_mapping_paired();
-
-//   return good;
-// }
-
-////////////////////////////////////////
-// Bismark
-// ////////////////////////////////////////
-
-// class BISMARKFLAG : public FLAG {
-// public:
-//   BISMARKFLAG(const size_t f) : FLAG(f) {}
-//   bool is_Trich() const {return is_pairend() ? FLAG::is_Trich() : true;}
-// };
-
-// static size_t
-// get_mismatch_bismark(const string &edit_distance_str,
-//                      const string &meth_call_str) {
-//   /* the result of this function might not be accurate, because if a
-//   sequencing error occurs on a cytosine, then it probably will be
-//   reported as a convertion
-//   */
-//   size_t edit_distance;
-//   edit_distance = atoi(edit_distance_str.substr(5).c_str());
-
-//   int convert_count = 0;
-//   const char *temp = meth_call_str.substr(5).c_str();
-//   while (*temp != '\0') {
-//     if (*temp == 'x' || *temp == 'h' || *temp == 'z')
-//       ++convert_count;
-//     ++temp;
-//   }
-
-//   return edit_distance - convert_count;
-// }
-
-// bool
-// SAMReader::get_SAMRecord_bismark(const string &str, sam_rec &samr) {
-//   string name, chrom, CIGAR, mate_name, seq, qual, strand_str,
-//     edit_distance_str, mismatch_str, meth_call_str,
-//     read_conv_str, genome_conv_str;
-//   size_t flag, start, mapq_score, mate_start;
-//   int seg_len;
-
-//   std::istringstream iss(str);
-//   if (!(iss >> name >> flag >> chrom >> start >> mapq_score >> CIGAR
-//         >> mate_name >> mate_start >> seg_len >> seq >> qual
-//         >> edit_distance_str >> mismatch_str >> meth_call_str
-//         >> read_conv_str >> genome_conv_str)) {
-//     good = false;
-//     throw runtime_error("malformed line in bismark SAM format:\n" + str);
-//   }
-
-//   BISMARKFLAG Flag(flag);
-
-//   samr.mr.r.set_chrom(chrom);
-//   samr.mr.r.set_start(start - 1);
-//   samr.mr.r.set_name(name);
-//   samr.mr.r.set_score(get_mismatch_bismark(edit_distance_str, meth_call_str));
-//   samr.mr.r.set_strand(Flag.is_revcomp() ? '-' : '+');
-
-//   string new_seq, new_qual;
-//   apply_CIGAR(seq, qual, CIGAR, new_seq, new_qual);
-
-//   if (Flag.is_revcomp()) {
-//     revcomp_inplace(new_seq);
-//     std::reverse(new_qual.begin(), new_qual.end());
-//   }
-
-//   samr.mr.r.set_end(samr.mr.r.get_start() + new_seq.size());
-//   samr.mr.seq = new_seq;
-//   samr.mr.qual = new_qual;
-
-//   samr.is_Trich = Flag.is_Trich();
-//   samr.is_mapping_paired = Flag.is_mapping_paired();
-
-//   return good;
-// }
-
-// ////////////////////////////////////////
-// // BS Seeker
-// ////////////////////////////////////////
-
-// class BSSEEKERFLAG : public FLAG {
-// public:
-//   BSSEEKERFLAG(const size_t f) : FLAG(f) {}
-//   // pair-end:
-//   //  if T-rich mate is +, then both mates are +;
-//   //  if T-rich mate is -, then both mates are -;
-//   // single-end:
-//   //  0 for +; 16 for -.
-//   bool is_Trich() const {
-//     return FLAG::is_pairend() ? FLAG::is_Trich() : true;
-//   }
-//   bool is_Arich() const {
-//     return FLAG::is_pairend() && FLAG::is_Arich();
-//   }
-//   bool is_revcomp() const {
-//     if (FLAG::is_pairend())
-//       return FLAG::is_revcomp() ? is_Trich() : is_Arich();
-//     else
-//       return FLAG::is_revcomp();
-//   }
-// };
-
-// bool
-// format_bsseeker_sam_record(sam_rec &samr) {
-
-//   // string name, chrom, CIGAR, mate_name, seq, qual, orientation_str,
-//   //   conversion_str, mismatch_str, mismatch_type_str, seq_genome_str;
-//   // size_t flag, start, mapq_score, mate_start;
-//   // int seg_len;
-
-// std::istringstream iss(str);
-// if (!(iss
-//       >> name >> flag >> chrom >> start >> mapq_score >> CIGAR
-//       >> mate_name >> mate_start >> seg_len >> seq >> qual
-//       >> orientation_str >> conversion_str >> mismatch_str
-//       >> mismatch_type_str >> seq_genome_str)) {
-// good = false;
-//   throw runtime_error("malformed line in bs_seeker SAM format:\n" + str);
-//   // }
-
-//   // bs_seeker also doesn't keep sequencing quality information?
-//   qual = string(seq.size(), 'h');
-
-//   BSSEEKERFLAG Flag(flag);
-
-//   samr.mr.r.set_name(name);
-//   samr.mr.r.set_score(atoi(mismatch_str.substr(5).c_str()));
-//   samr.mr.r.set_strand(Flag.is_revcomp() ? '-' : '+');
-
-//   string new_seq, new_qual;
-//   apply_CIGAR(seq, qual, CIGAR, new_seq, new_qual);
-
-//   if (Flag.is_revcomp()) {
-//     revcomp_inplace(new_seq);
-//     std::reverse(new_qual.begin(), new_qual.end());
-//   }
-
-//   samr.mr.r.set_end(samr.mr.r.get_start() + new_seq.size());
-//   samr.mr.seq = new_seq;
-//   samr.mr.qual = new_qual;
-
-//   samr.is_Trich = Flag.is_Trich();
-//   samr.is_mapping_paired = Flag.is_mapping_paired();
-
-//   return good;
-// }
-
-
-//   if (mapper == "bsmap")
-//     return get_SAMRecord_bsmap(str, samr);
-//   else if (mapper == "bismark")
-//     return get_SAMRecord_bismark(str, samr);
-//   else if (mapper == "bs_seeker")
-//     return get_SAMRecord_bsseeker(str, samr);
-//   else if (mapper == "general")
-//     return get_SAMRecord_general(str, samr);
-//   else
-//     good = false;
-//   return false;
-// }
-
-
 int
 main(int argc, const char **argv) {
 
@@ -433,7 +243,7 @@ main(int argc, const char **argv) {
 
     string outfile;
     string mapper;
-    size_t max_frag_len = 1000;
+    int max_frag_len = 1000;
     size_t max_dangling = 500;
     size_t suffix_len = 1;
     bool VERBOSE = false;
@@ -494,7 +304,7 @@ main(int argc, const char **argv) {
       if (is_mapped(aln) && is_primary(aln)) {
         if (is_mapped_single_end(aln)) {
           if (is_a_rich(aln))
-            revcomp(aln);
+            flip_conversion(aln);
           out << aln << '\n';
         }
         else { // is_mapped_paired(aln)
@@ -505,12 +315,17 @@ main(int argc, const char **argv) {
           }
           else { // found a mate
 
-            if (!is_rc(aln)) // earlier mate must have been a-rich
+            // ADS: below is essentially a check for dovetail
+            if (!is_rc(aln))
               swap(aln, the_mate->second);
 
             sam_rec merged;
             const int frag_len = merge_mates(suffix_len, max_frag_len,
                                              the_mate->second, aln, merged);
+
+            if (is_a_rich(merged))
+              flip_conversion(merged);
+
             if (frag_len <= max_frag_len)
               out << merged << '\n';
             else if (frag_len > 0)
@@ -525,7 +340,7 @@ main(int argc, const char **argv) {
             for (auto &&mates : dangling_mates)
               if (precedes_by_more_than(the_mate->second, aln, max_frag_len)) {
                 if (is_a_rich(mates.second))
-                  revcomp(mates.second);
+                  flip_conversion(mates.second);
                 out << mates.second << endl;
               }
               else to_keep.insert(mates);
@@ -539,7 +354,7 @@ main(int argc, const char **argv) {
     // flushing dangling_mates
     while (!dangling_mates.empty()) {
       if (is_a_rich(begin(dangling_mates)->second))
-        revcomp(begin(dangling_mates)->second);
+        flip_conversion(begin(dangling_mates)->second);
       out << begin(dangling_mates)->second << endl;
       dangling_mates.erase(begin(dangling_mates));
     }
