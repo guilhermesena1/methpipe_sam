@@ -88,7 +88,9 @@ static bool
 is_mapped_single_end(const sam_rec &aln) {
   return is_mapped(aln) &&
     (!check_flag(aln, samflags::read_paired) ||
-     check_flag(aln, samflags::mate_unmapped));
+     check_flag(aln, samflags::mate_unmapped) ||
+     aln.tlen == 0 ||
+     aln.rname != aln.rnext);
 }
 
 inline bool
@@ -132,6 +134,9 @@ get_r_end(const sam_rec &sr) {
 static size_t
 merge_mates(const size_t suffix_len, const size_t range,
             const sam_rec &one, const sam_rec &two, sam_rec &merged) {
+
+  // cerr << one << '\t' << is_rc(one) << endl
+  //      << two << '\t' << is_rc(two) << endl;
 
   assert(is_rc(one) == false && is_rc(two) == true);
 
@@ -222,9 +227,11 @@ merge_mates(const size_t suffix_len, const size_t range,
 
 /********Above are functions for merging pair-end reads********/
 
+// ADS: there is a bug somewhere when a value of 0 is given for
+// suffix_len
 static string
 remove_suffix(const string &x, const size_t suffix_len) {
-  return x.substr(0, x.size() - suffix_len);
+  return x.size() > suffix_len ? x.substr(0, x.size() - suffix_len) : x;
 }
 
 static bool
@@ -235,13 +242,55 @@ precedes_by_more_than(const sam_rec &a, const sam_rec &b,
 }
 
 
+inline bool
+bsmap_get_rc(const string &strand_tag) {
+  return strand_tag.size() >= 5 && strand_tag[5] == '-';
+}
+
+inline bool
+bsmap_get_a_rich(const string &richness_tag) {
+  return richness_tag.size() >= 6 && richness_tag[6] == '-';
+}
+
+static void
+standardize_format(const string &input_format, sam_rec &aln) {
+
+  if (input_format == "abismal") return;
+
+  if (input_format == "bsmap") {
+    auto z_tag_itr = find_if(begin(aln.tags), end(aln.tags),
+                             [](const string &t) {
+                               return t.compare (0, 3, "ZS:") == 0;
+                             });
+    if (z_tag_itr == end(aln.tags))
+      throw runtime_error("record appears to be invalid for bsmap");
+    const string z_tag = *z_tag_itr;
+    aln.tags.erase(z_tag_itr);
+
+    if (bsmap_get_rc(z_tag))
+      set_flag(aln, samflags::read_rc);
+    else
+      unset_flag(aln, samflags::read_rc);
+
+    const bool ar = bsmap_get_a_rich(z_tag);
+    if (ar)
+      flip_strand(aln);
+    aln.add_tag(ar ? "CV:A:A" : "CV:A:T");
+  }
+
+  // doesn't depend on mapper
+  aln.qual = "*";
+}
+
+
+
 int
 main(int argc, const char **argv) {
 
   try {
 
     string outfile;
-    string mapper;
+    string input_format;
     int max_frag_len = 1000;
     size_t max_dangling = 500;
     size_t suffix_len = 1;
@@ -253,6 +302,8 @@ main(int argc, const char **argv) {
     /****************** COMMAND LINE OPTIONS ********************/
     OptionParser opt_parse(strip_path(argv[0]), description,
                            "<sam/bam-file>", 1);
+    opt_parse.add_opt("format", 'f', "input format (abismal, bsmap, bismark)",
+                      false, input_format);
     opt_parse.add_opt("output", 'o', "output file name",
                       false, outfile);
     opt_parse.add_opt("suff", 's', "read name suffix length (default: 1)",
@@ -301,6 +352,9 @@ main(int argc, const char **argv) {
     sam_rec aln;
 
     while (sam_reader >> aln) {
+
+      standardize_format(input_format, aln);
+
       if (is_mapped(aln) && is_primary(aln)) {
         if (is_mapped_single_end(aln)) {
           if (is_a_rich(aln))
@@ -308,10 +362,11 @@ main(int argc, const char **argv) {
           out << aln << '\n';
         }
         else { // is_mapped_paired(aln)
+
           const string read_name(remove_suffix(aln.qname, suffix_len));
           auto the_mate = dangling_mates.find(read_name);
           if (the_mate == end(dangling_mates)) {
-            dangling_mates[read_name] = aln; // no mate yet
+            dangling_mates[read_name] = aln; // no mate seen yet
           }
           else { // found a mate
 
