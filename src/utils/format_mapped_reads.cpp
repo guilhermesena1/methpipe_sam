@@ -251,7 +251,8 @@ main(int argc, const char **argv) {
       "to standard methpipe format";
 
     /****************** COMMAND LINE OPTIONS ********************/
-    OptionParser opt_parse(strip_path(argv[0]), description, 1);
+    OptionParser opt_parse(strip_path(argv[0]), description,
+                           "<sam/bam-file>", 1);
     opt_parse.add_opt("output", 'o', "output file name",
                       false, outfile);
     opt_parse.add_opt("suff", 's', "read name suffix length (default: 1)",
