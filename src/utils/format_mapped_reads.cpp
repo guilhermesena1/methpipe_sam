@@ -41,7 +41,6 @@
 #include "htslib_wrapper.hpp"
 #include "sam_record.hpp"
 #include "cigar_utils.hpp"
-// #include "bisulfite_utils.hpp"
 
 using std::string;
 using std::vector;
@@ -248,12 +247,12 @@ main(int argc, const char **argv) {
     size_t suffix_len = 1;
     bool VERBOSE = false;
 
+    const string description = "convert SAM/BAM mapped bs-seq reads "
+      "to standard methpipe format";
+
     /****************** COMMAND LINE OPTIONS ********************/
-    OptionParser opt_parse(strip_path(argv[0]),
-                           "Convert the SAM/BAM output from "
-                           "bismark or bs_seeker to MethPipe mapped read format",
-                           "sam/bam_file");
-    opt_parse.add_opt("output", 'o', "Name of output file",
+    OptionParser opt_parse(strip_path(argv[0]), description, 1);
+    opt_parse.add_opt("output", 'o', "output file name",
                       false, outfile);
     opt_parse.add_opt("suff", 's', "read name suffix length (default: 1)",
                       false, suffix_len);
