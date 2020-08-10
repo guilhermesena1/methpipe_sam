@@ -46,6 +46,10 @@ INCLUDEARGS = $(addprefix -I,$(INCLUDEDIRS))
 
 LIBS = -lgsl -lgslcblas -lz
 
+ifdef HAVE_HTSLIB
+LIBS += -lhts
+endif
+
 all: $(PROGS)
 
 install: $(PROGS)
