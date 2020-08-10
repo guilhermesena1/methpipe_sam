@@ -89,8 +89,9 @@ is_mapped_single_end(const sam_rec &aln) {
   return is_mapped(aln) &&
     (!check_flag(aln, samflags::read_paired) ||
      check_flag(aln, samflags::mate_unmapped) ||
-     aln.tlen == 0 ||
-     aln.rname != aln.rnext);
+     aln.tlen == 0);
+  // ||
+  //    aln.rnext == "=");
 }
 
 inline bool
@@ -283,7 +284,6 @@ standardize_format(const string &input_format, sam_rec &aln) {
 }
 
 
-
 int
 main(int argc, const char **argv) {
 
@@ -291,8 +291,8 @@ main(int argc, const char **argv) {
 
     string outfile;
     string input_format;
-    int max_frag_len = 1000;
-    size_t max_dangling = 500;
+    int max_frag_len = 3000;
+    size_t max_dangling = 5000;
     size_t suffix_len = 1;
     bool VERBOSE = false;
 
